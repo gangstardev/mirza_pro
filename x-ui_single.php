@@ -57,34 +57,75 @@ function get_clinets($username, $namepanel)
 {
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $namepanel, "select");
     login($marzban_list_get['code_panel']);
-    $url = $marzban_list_get['url_panel'] . "/panel/api/inbounds/getClientTraffics/$username";
-    $headers = array(
-        'Accept: application/json',
-        'Content-Type: application/json',
-    );
-    $req = new CurlRequest($url);
-    $req->setHeaders($headers);
-    $req->setCookie('cookie.txt');
-    $response = $req->get();
-
-    if (isset($response['body'])) {
-        $decodedBody = json_decode($response['body'], true);
-        if (json_last_error() === JSON_ERROR_NONE && is_array($decodedBody)) {
-            if (isset($decodedBody['success']) && $decodedBody['success'] === false) {
-                $response['error'] = $decodedBody['msg'] ?? 'Unknown panel error';
+    $curl = curl_init();
+    curl_setopt_array($curl, array(
+        CURLOPT_URL => $marzban_list_get['url_panel'] . '/xui/API/inbounds',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => '',
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_SSL_VERIFYHOST => false,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_TIMEOUT_MS => 4000,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => 'GET',
+        CURLOPT_HTTPHEADER => array(
+            'Accept: application/json'
+        ),
+        CURLOPT_COOKIEFILE => 'cookie.txt',
+    ));
+    $clientData = null;
+    $clientStats = null;
+    $inboundId = null;
+    $response = json_decode(curl_exec($curl), true);
+    curl_close($curl);
+    
+    if (!isset($response) || !isset($response['obj'])) {
+        if (is_file('cookie.txt')) {
+            @unlink('cookie.txt');
+        }
+        return array('body' => json_encode(array('obj' => null)));
+    }
+    
+    foreach ($response['obj'] as $inbound) {
+        $settings = json_decode($inbound['settings'], true);
+        if (isset($settings['clients'])) {
+            foreach ($settings['clients'] as $client) {
+                if ($client['email'] == $username) {
+                    $clientData = $client;
+                    $inboundId = $inbound['id'];
+                    break;
+                }
             }
         }
+        if (isset($inbound['clientStats'])) {
+            foreach ($inbound['clientStats'] as $stats) {
+                if ($stats['email'] == $username) {
+                    $clientStats = $stats;
+                    break;
+                }
+            }
+        }
+        if ($clientData) break;
     }
-
-    if (!empty($response['error'])) {
-        error_log(json_encode($response));
-    }
-
+    
     if (is_file('cookie.txt')) {
         @unlink('cookie.txt');
     }
-
-    return $response;
+    
+    if (!$clientData) {
+        return array('body' => json_encode(array('obj' => null)));
+    }
+    
+    $mergedData = array_merge($clientData, $clientStats ?: array());
+    if ($inboundId) {
+        $mergedData['inboundId'] = $inboundId;
+    }
+    if (isset($mergedData['totalGB']) && !isset($mergedData['total'])) {
+        $mergedData['total'] = $mergedData['totalGB'];
+    }
+    
+    return array('body' => json_encode(array('obj' => $mergedData)));
 }
 function addClient($namepanel, $usernameac, $Expire, $Total, $Uuid, $Flow, $subid, $inboundid, $name_product, $note = "")
 {
@@ -140,7 +181,7 @@ function addClient($namepanel, $usernameac, $Expire, $Total, $Uuid, $Flow, $subi
             'msg' => 'username is null'
         );
     $configpanel = json_encode($config, true);
-    $url = $marzban_list_get['url_panel'] . '/panel/api/inbounds/addClient';
+    $url = $marzban_list_get['url_panel'] . '/xui/API/inbounds/addClient';
     $headers = array(
         'Accept: application/json',
         'Content-Type: application/json',
@@ -155,9 +196,21 @@ function addClient($namepanel, $usernameac, $Expire, $Total, $Uuid, $Flow, $subi
 function updateClient($namepanel, $uuid, array $config)
 {
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $namepanel, "select");
+    $clientData = json_decode($config['settings'], true);
+    if (isset($clientData['clients'][0]['email'])) {
+        $username = $clientData['clients'][0]['email'];
+        $clientInfo = get_clinets($username, $namepanel);
+        $clientInfo = json_decode($clientInfo['body'], true)['obj'];
+        if (!$clientInfo || !isset($clientInfo['id'])) {
+            return array('status' => 500, 'msg' => 'Client not found');
+        }
+        $clientId = $clientInfo['id'];
+    } else {
+        $clientId = $uuid;
+    }
     login($marzban_list_get['code_panel']);
     $configpanel = json_encode($config, true);
-    $url = $marzban_list_get['url_panel'] . '/panel/api/inbounds/updateClient/' . $uuid;
+    $url = $marzban_list_get['url_panel'] . '/xui/API/inbounds/updateClient/' . $clientId;
     $headers = array(
         'Accept: application/json',
         'Content-Type: application/json',
@@ -175,7 +228,7 @@ function ResetUserDataUsagex_uisin($usernamepanel, $namepanel)
     $data_user = json_decode($data_user['body'], true)['obj'];
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $namepanel, "select");
     login($marzban_list_get['code_panel']);
-    $url = $marzban_list_get['url_panel'] . "/panel/api/inbounds/{$data_user['inboundId']}/resetClientTraffic/" . $usernamepanel;
+    $url = $marzban_list_get['url_panel'] . "/xui/API/inbounds/{$marzban_list_get['inboundid']}/resetClientTraffic/" . $usernamepanel;
     $headers = array(
         'Accept: application/json',
         'Content-Type: application/json',
@@ -190,8 +243,13 @@ function ResetUserDataUsagex_uisin($usernamepanel, $namepanel)
 function removeClient($location, $username)
 {
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $location, "select");
+    $data_user = get_clinets($username, $location);
+    $data_user = json_decode($data_user['body'], true)['obj'];
+    if (!$data_user || !isset($data_user['id'])) {
+        return array('status' => 500, 'msg' => 'User not found');
+    }
     login($marzban_list_get['code_panel']);
-    $url = $marzban_list_get['url_panel'] . "/panel/api/inbounds/{$marzban_list_get['inboundid']}/delClientByEmail/" . $username;
+    $url = $marzban_list_get['url_panel'] . "/xui/API/inbounds/{$marzban_list_get['inboundid']}/delClient/" . $data_user['id'];
     $headers = array(
         'Accept: application/json',
         'Content-Type: application/json',
